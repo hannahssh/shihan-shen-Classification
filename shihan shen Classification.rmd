@@ -1,0 +1,457 @@
+---
+title: "Classification Assessment"
+author: "shihan shen"
+date: "2024-03-13"
+output: html_document
+---
+
+```{r message=FALSE, warning=FALSE}
+library("tidyverse")
+```
+
+# 1.Problem description
+
+Aim is to predict whether a patient will suffer a fatal myocardial infarction"Target variable: fatal mi
+
+```{r}
+data<-read.csv("https://www.louisaslett.com/Courses/MISCADA/heart_failure.csv")
+
+
+data$fatal_mi<-as.factor(data$fatal_mi)
+
+# initial data summary
+summary(data)
+
+skimr::skim(data)
+```
+
+```{r}
+new_fill_colors <- c("blue", "red")
+
+
+for (variable in c("age", "creatinine_phosphokinase", "ejection_fraction", "platelets", "serum_creatinine", "serum_sodium", "time")) {
+print(  ggplot(data, aes(x = factor(fatal_mi), y = !!sym(variable), fill = factor(fatal_mi))) +
+    geom_boxplot() +
+    labs(x = "Fatal MI", y = variable) +
+    scale_fill_manual(name = "Fatal MI", labels = c("No", "Yes"), values = new_fill_colors) +
+    ggtitle(paste("Boxplot of", variable, "by Fatal MI")))
+}
+
+
+for (variable in c("anaemia", "diabetes", "sex", "high_blood_pressure", "smoking")) {
+
+  counts <- table(data[[variable]], fatal_mi=data$fatal_mi)
+ 
+  proportions <- as.data.frame(prop.table(counts, margin = 1))
+  colnames( proportions)[1]<-variable
+
+  p <- ggplot(data = proportions, aes(x = !!sym(variable), y = Freq, fill = factor(fatal_mi))) +
+    geom_bar(stat = "identity", position = "fill") +
+    labs(x = paste(variable, "Status"), y = "Proportion", fill = "Fatal MI") +
+    scale_fill_manual(name = "Fatal MI", values = new_fill_colors) +
+    ggtitle(paste("Barplot of", variable, "by Fatal MI"))
+  
+  print(p)
+}
+```
+
+Except for the platelets and creatinine_phosphokinase variables, the boxplots of the remaining numerical variables have significantly different medians and distributions for different fatal_mi. For categorical variables, except SEX, diabetes status and smoking status, other categorical variables may have an impact on fatal_mi.
+
+# 2.Model fitting
+
+### Machine learning
+
+```{r message=FALSE, warning=FALSE}
+library("data.table")
+library("mlr3verse")
+library("rsample")
+```
+
+```{r}
+credit_task <- TaskClassif$new(id = "fatal",
+                               backend = data, # <- NB: no na.omit() this time
+                               target = "fatal_mi",
+                               positive = "1")
+
+
+set.seed(212) # by setting the seed we know everyone will see the same results
+# First get the training
+split <- initial_split(data)
+train <- training(split)
+# Then further split the training into validate and test
+split2 <- initial_split(testing(split), 0.5)
+validate <- training(split2)
+test <- testing(split2)
+
+# Define a collection of base learners
+lrn_baseline <- lrn("classif.featureless", predict_type = "prob")
+lrn_cart     <- lrn("classif.rpart", predict_type = "prob")
+lrn_cart_cp  <- lrn("classif.rpart", predict_type = "prob", cp = 0.016, id = "cartcp")
+lrn_ranger   <- lrn("classif.ranger", predict_type = "prob")
+lrn_xgboost  <- lrn("classif.xgboost", predict_type = "prob")
+lrn_log_reg  <- lrn("classif.log_reg", predict_type = "prob")
+
+# Fit the base learners
+lrn_baseline$train(credit_task, row_ids =as.numeric(rownames(train)))
+lrn_cart$train(credit_task, row_ids =as.numeric(rownames(train)))
+lrn_cart_cp$train(credit_task, row_ids =as.numeric(rownames(train)))
+lrn_ranger$train(credit_task, row_ids =as.numeric(rownames(train)))
+lrn_xgboost$train(credit_task, row_ids =as.numeric(rownames(train)))
+lrn_log_reg$train(credit_task, row_ids =as.numeric(rownames(train)))
+
+# Make predictions on the test set
+pred_test_baseline <- lrn_baseline$predict(credit_task,as.numeric(rownames(test)))
+pred_test_cart <- lrn_cart$predict(credit_task,as.numeric(rownames(test)))
+pred_test_cart_cp <- lrn_cart_cp$predict(credit_task,as.numeric(rownames(test)))
+pred_test_ranger <- lrn_ranger$predict(credit_task,as.numeric(rownames(test)))
+pred_test_xgboost <- lrn_xgboost$predict(credit_task,as.numeric(rownames(test)))
+pred_test_log_reg <- lrn_log_reg$predict(credit_task,as.numeric(rownames(test)))
+
+# Evaluate the predictions
+table_baseline <- pred_test_baseline$confusion
+table_cart <- pred_test_cart$confusion
+table_cart_cp <- pred_test_cart_cp$confusion
+table_ranger <- pred_test_ranger$confusion
+table_xgboost <- pred_test_xgboost$confusion
+table_log_reg <- pred_test_log_reg$confusion
+
+accuracy_baseline <- yardstick::accuracy_vec(factor(test$fatal_mi, levels = c("1","0")), pred_test_baseline$response)
+accuracy_cart <- yardstick::accuracy_vec(factor(test$fatal_mi, levels = c("1","0")), pred_test_cart$response)
+accuracy_cart_cp <- yardstick::accuracy_vec(factor(test$fatal_mi, levels = c("1","0")), pred_test_cart_cp$response)
+accuracy_ranger <- yardstick::accuracy_vec(factor(test$fatal_mi, levels = c("1","0")), pred_test_ranger$response)
+accuracy_xgboost <- yardstick::accuracy_vec(factor(test$fatal_mi, levels = c("1","0")), pred_test_xgboost$response)
+accuracy_log_reg <- yardstick::accuracy_vec(factor(test$fatal_mi, levels = c("1","0")), pred_test_log_reg$response)
+
+roc_auc_baseline <- yardstick::roc_auc_vec(factor(test$fatal_mi, levels = c("1","0")), c(pred_test_baseline$prob[,1]))
+roc_auc_cart <- yardstick::roc_auc_vec(factor(test$fatal_mi, levels = c("1","0")), c(pred_test_cart$prob[,1]))
+roc_auc_cart_cp <- yardstick::roc_auc_vec(factor(test$fatal_mi, levels = c("1","0")), c(pred_test_cart_cp$prob[,1]))
+roc_auc_ranger <- yardstick::roc_auc_vec(factor(test$fatal_mi, levels = c("1","0")), c(pred_test_ranger$prob[,1]))
+roc_auc_xgboost <- yardstick::roc_auc_vec(factor(test$fatal_mi, levels = c("1","0")), c(pred_test_xgboost$prob[,1]))
+roc_auc_log_reg <- yardstick::roc_auc_vec(factor(test$fatal_mi, levels = c("1","0")), c(pred_test_log_reg$prob[,1]))
+
+# Print the results
+print("Baseline Model:")
+print(table_baseline)
+print(accuracy_baseline)
+print(roc_auc_baseline)
+
+print("CART Model:")
+print(table_cart)
+print(accuracy_cart)
+print(roc_auc_cart)
+
+print("CART Model with cp:")
+print(table_cart_cp)
+print(accuracy_cart_cp)
+print(roc_auc_cart_cp)
+
+print("Random Forest Model:")
+print(table_ranger)
+print(accuracy_ranger)
+print(roc_auc_ranger)
+
+print("XGBoost Model:")
+print(table_xgboost)
+print(accuracy_xgboost)
+print(roc_auc_xgboost)
+
+print("Logistic Regression Model:")
+print(table_log_reg)
+print(accuracy_log_reg)
+print(roc_auc_log_reg)
+
+```
+
+The optimal Model in machine learning is Random Forest Model.
+
+### Deep learning
+
+```{r}
+
+data$anaemia<-as.factor(data$anaemia)
+data$diabetes<-as.factor(data$diabetes)
+data$high_blood_pressure<-as.factor(data$high_blood_pressure)
+data$sex<-as.factor(data$sex)
+data$smoking<-as.factor(data$smoking)
+```
+
+```{r}
+
+set.seed(212) # by setting the seed we know everyone will see the same results
+# First get the training
+split_1 <- initial_split(data)
+train1 <- training(split_1)
+# Then further split the training into validate and test
+split_2 <- initial_split(testing(split_1), 0.5)
+validate1 <- training(split_2)
+test1 <- testing(split_2)
+
+library("recipes")
+
+cake <- recipe(fatal_mi ~ ., data = data) %>%
+  step_impute_mean(all_numeric()) %>% # impute missings on numeric values with the mean
+  step_center(all_numeric()) %>% # center by subtracting the mean from all numeric features
+  step_scale(all_numeric()) %>% # scale by dividing by the standard deviation on all numeric features
+  step_dummy(all_nominal(), one_hot = TRUE) %>% # turn all factors into a one-hot coding
+  prep(training = train1) # learn all the parameters of preprocessing on the training data
+
+train_final <- bake(cake, new_data = train1) # apply preprocessing to training data
+validate_final <- bake(cake, new_data = validate1) # apply preprocessing to validation data
+test_final <- bake(cake, new_data = test1) # apply preprocessing to testing data
+
+library("keras")
+tensorflow::set_random_seed(2)
+train_x <- train_final %>%
+  select(-starts_with("fatal_mi")) %>%
+  as.matrix()
+train_y <- train_final %>%
+  select(fatal_mi_X1) %>%
+  as.matrix()
+
+validate_x <- validate_final %>%
+  select(-starts_with("fatal_mi")) %>%
+  as.matrix()
+validate_y <- validate_final %>%
+  select(fatal_mi_X1) %>%
+  as.matrix()
+
+test_x <- test_final %>%
+  select(-starts_with("fatal_mi")) %>%
+  as.matrix()
+test_y <- test_final %>%
+  select(fatal_mi_X1) %>%
+  as.matrix()
+
+# We can now start to construct our deep neural network architecture
+# We make a neural network with two hidden layers, 32 neurons in the
+# first, 32 in second and an output to a binary classification
+deep.net <- keras_model_sequential() %>%
+  layer_dense(units = 32, activation = "relu",
+              input_shape = c(ncol(train_x))) %>%
+  layer_dense(units = 32, activation = "relu") %>%
+  layer_dense(units = 1, activation = "sigmoid")
+# Have a look at it
+deep.net
+
+# This must then be "compiled".  See lectures on the optimiser.
+deep.net %>% compile(
+  loss = "binary_crossentropy",
+  optimizer = optimizer_rmsprop(),
+  metrics = c("accuracy")
+)
+
+
+deep.net %>% fit(train_x, train_y,
+  epochs = 50, batch_size = 32,
+  validation_data = list(validate_x, validate_y),verbose = 0
+)
+
+# To get the probability predictions on the test set:
+pred_test_prob <- deep.net %>% predict(test_x)
+
+# To get the raw classes (assuming 0.5 cutoff):
+pred_test_res <- deep.net %>% predict(test_x) %>% `>`(0.5) %>% as.integer()
+
+table(pred_test_res, test_y)
+acc_deep<-yardstick::accuracy_vec(factor(test_y, levels = c("1","0")),
+                        factor(pred_test_res, levels = c("1","0")))
+auc_deep<-yardstick::roc_auc_vec(factor(test_y, levels = c("1","0")),
+                       c(pred_test_prob))
+acc_deep
+auc_deep
+```
+
+The auc of deep learning is 0.9130435 and accuracy of the model prediction is 0.7894737 .
+
+# 3.Model improvements
+
+Next, adjust and improve the parameters of the deep learning model.
+
+### Deep learning(improved)
+
+```{r}
+tensorflow::set_random_seed(2)
+deep_net_improved <- keras_model_sequential()
+
+deep_net_improved %>% 
+  layer_dense(units = 32, activation = "relu", input_shape = c(ncol(train_x))) %>%
+  layer_batch_normalization() 
+  layer_dropout(rate = 0.1)
+
+num_hidden_layers <- 4 
+for (i in 1:num_hidden_layers) {
+  deep_net_improved %>% 
+    layer_dense(units = 32, activation = "relu") %>%
+    layer_batch_normalization() %>%
+    layer_dropout(rate = 0.1)
+}
+
+deep_net_improved %>% 
+  layer_dense(units = 1, activation = "sigmoid")
+
+deep_net_improved %>% compile(
+  loss = 'binary_crossentropy',
+  optimizer = optimizer_rmsprop(),
+  metrics = c('accuracy')
+)
+
+deep_net_improved %>% 
+  fit(
+    train_x, 
+    train_y,
+    epochs = 200,
+    batch_size = 32,
+    validation_data = list(validate_x, validate_y),
+    verbose = 0
+)
+
+
+pred_test_prob <- deep_net_improved %>% predict(test_x)
+
+pred_test_res <- pred_test_prob %>%
+  `>`(0.5) %>%
+  as.integer()
+
+table(pred_test_res, test_y)
+acc_deep_improve<-yardstick::accuracy_vec(
+  factor(test_y, levels = c("1","0")),
+  factor(pred_test_res, levels = c("1","0")))
+
+auc_deep_improve<-yardstick::roc_auc_vec(
+  factor(test_y, levels = c("1","0")),
+  c(pred_test_prob))
+
+acc_deep_improve
+auc_deep_improve
+```
+
+After adjustment, the accuracy and auc of the deep learning model are improved, but still smaller than that of the random forest model.
+
+### Random forest model(improved)
+
+```{r}
+library(mlr3tuning)
+library(paradox)
+
+param_set <- list(
+  num.trees = ParamInt$new("num.trees", lower = 50, upper = 600),
+  mtry = ParamInt$new("mtry", lower = 2, upper = 8), 
+  min.node.size = ParamInt$new("min.node.size", lower = 5, upper = 10)
+)
+
+param_set_obj <- ParamSet$new(param_set)
+
+auto_tuner <- AutoTuner$new(
+  learner = lrn_ranger,
+  resampling = rsmp("holdout"), 
+  measure = msr("classif.auc"), 
+  search_space = param_set_obj,
+  terminator = trm("evals", n_evals = 80),
+  tuner = tnr("random_search") 
+)
+auto_tuner$train(credit_task, row_ids = as.numeric(rownames(train)))
+
+pred_test_ranger_tuned <- auto_tuner$predict(credit_task, row_ids = as.numeric(rownames(test)))
+
+roc_auc_ranger_tuned <- yardstick::roc_auc_vec(factor(test$fatal_mi, levels = c("1","0")), c(pred_test_ranger_tuned$prob[,1]))
+print(roc_auc_ranger_tuned)
+
+accuracy_ranger_tuned <- yardstick::accuracy_vec(factor(test$fatal_mi, levels = c("1","0")), pred_test_ranger_tuned$response)
+print(accuracy_ranger_tuned )
+```
+
+```{r}
+lrn_ranger$model
+```
+
+The effect of the model after tuning is not as good as that of the previous random forest model. Therefore, it can be concluded that the effect of the random forest model is the best, where the optimal parameters are mtry=3, node size=10, and number of trees=500.
+
+# 4.Performance report
+
+### calibration
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(caret)
+
+models <- list(
+  baseline = pred_test_baseline$prob[, 1],
+  cart = pred_test_cart$prob[, 1],
+  cart_cp = pred_test_cart_cp$prob[, 1],
+  ranger = pred_test_ranger$prob[, 1],
+  xgboost = pred_test_xgboost$prob[, 1],
+  log_reg = pred_test_log_reg$prob[, 1],
+  nn = pred_test_prob  
+)
+
+calibrations <- list()
+
+for(model_name in names(models)) {
+  if(model_name == "nn") {
+    truth <- factor(test_y[,1], levels=c("1","0"))
+  } else {
+    truth <- test$fatal_mi
+  }
+  
+  data <- data.frame(prob = models[[model_name]], truth = truth)
+  
+  calibrations[[model_name]] <- calibration(truth ~ prob, data = data, bins = 10)
+}
+
+
+plot(calibrations[["baseline"]], main = "Baseline Calibration", col = "blue", type = "l")
+plot(calibrations[["cart"]], main = "CART Calibration", col = "red", type = "l")
+
+plot(calibrations[["cart_cp"]], main = "CART with Cost Complexity Pruning Calibration", col = "green", type = "l")
+
+plot(calibrations[["ranger"]], main = "Ranger Calibration", col = "purple", type = "l")
+
+plot(calibrations[["xgboost"]], main = "XGBoost Calibration", col = "orange", type = "l")
+
+plot(calibrations[["log_reg"]], main = "Logistic Regression Calibration", col = "brown", type = "l")
+
+plot(calibrations[["nn"]], main = "Neural Network Calibration", col = "pink", type = "l")
+```
+
+### true/false positive rates
+
+```{r}
+calculateSensitivitySpecificity <- function(yTrue, yPredProb, threshold = 0.5) {
+  yPred <- ifelse(yPredProb > threshold, 1, 0)
+  
+  # Calculate True Positives (TP)
+  TP <- sum((yTrue == 1) & (yPred == 1))
+  # Calculate False Positives (FP)
+  FP <- sum((yTrue == 0) & (yPred == 1))
+  # Calculate True Negatives (TN)
+  TN <- sum((yTrue == 0) & (yPred == 0))
+  # Calculate False Negatives (FN)
+  FN <- sum((yTrue == 1) & (yPred == 0))
+  
+  # Calculate sensitivity and specificity
+  sensitivity <- TP / (TP + FN)
+  specificity <- TN / (TN + FP)
+  
+  # Return a list containing sensitivity and specificity
+  return(list(sensitivity = sensitivity, specificity = specificity))
+}
+
+calculateResults <- function(yTrue, predProb) {
+  calculateSensitivitySpecificity(yTrue, predProb[, 1])
+}
+
+testResults <- list(
+  Baseline = calculateResults(test$fatal_mi, pred_test_baseline$prob),
+  CART = calculateResults(test$fatal_mi, pred_test_cart$prob),
+  `CART with cp` = calculateResults(test$fatal_mi, pred_test_cart_cp$prob),
+  `Random Forest` = calculateResults(test$fatal_mi, pred_test_ranger$prob),
+  XGBoost = calculateResults(test$fatal_mi, pred_test_xgboost$prob),
+  `Logistic Regression` = calculateResults(test$fatal_mi, pred_test_log_reg$prob),
+  `Neural Network` = calculateResults(test_y, pred_test_prob)
+)
+
+for (modelName in names(testResults)) {
+  cat(modelName, ": Sensitivity =", testResults[[modelName]]$sensitivity, ", Specificity =", testResults[[modelName]]$specificity, "\n")
+}
+```
